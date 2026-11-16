@@ -17,7 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Auto-detectar slug e IP
 slug = "ios_game"
-vita_ip = "192.168.1.100"
+vita_ip = "192.168.3.15"
 
 cfg_file = os.path.join(ROOT, ".psvita-toolkit.json")
 if os.path.exists(cfg_file):
