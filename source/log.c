@@ -38,6 +38,17 @@ static void log_v(const char *level, const char *fmt, va_list ap) {
     }
 }
 
+void l_debug(const char *fmt, ...) {
+#ifdef DEBUG_LOADER
+    va_list ap;
+    va_start(ap, fmt);
+    log_v("DEBUG", fmt, ap);
+    va_end(ap);
+#else
+    (void)fmt;
+#endif
+}
+
 void l_info(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

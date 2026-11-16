@@ -35,6 +35,7 @@ ExternalProject_Add(
   CONFIGURE_COMMAND ""
   BUILD_COMMAND make ${VITAGL_MAKE_FLAGS}
   INSTALL_COMMAND ""
+  BUILD_BYPRODUCTS ${VITAGL_VENDOR_DIR}/libvitaGL.a
 )
 add_library(vitaGL_vendored_lib STATIC IMPORTED)
 set_target_properties(vitaGL_vendored_lib PROPERTIES IMPORTED_LOCATION ${VITAGL_VENDOR_DIR}/libvitaGL.a)

@@ -21,6 +21,8 @@
 #define LC_SEGMENT 0x1
 #define LC_SYMTAB 0x2
 #define LC_DYSYMTAB 0xB
+#define LC_UNIXTHREAD 0x5
+#define LC_MAIN 0x80000028
 #define LC_ENCRYPTION_INFO 0x21
 
 #define S_ZEROFILL 0x1
@@ -55,30 +57,36 @@ typedef struct {
 typedef struct {
     uint32_t n_strx;
     uint8_t n_type, n_sect;
-    uint16_t n_desc;
+    int16_t n_desc;
     uint32_t n_value;
 } nlist;
 
 typedef struct {
-    uint32_t ilocalsym, nlocalsym, iextdefsym, nextdefsym, iundefsym, nundefsym, tocoff, ntoc,
-        modtaboff, nmodtab, extrefsymoff, nextrefsyms, indirectsymoff, nindirectsyms, extreloff,
-        nextrel, locreloff, nlocrel;
+    uint32_t ilocalsym, nlocalsym, iextdefsym, nextdefsym, iundefsym, nundefsym;
+    uint32_t tocoff, ntoc, modtaboff, nmodtab, extrefsymoff, nextrefsyms;
+    uint32_t indirectsymoff, nindirectsyms, extreloff, nextrel, locreloff, nlocrel;
 } dysymtab_command;
 
-static uint8_t *file_data;
-static uint32_t file_slice_offset = 0;
-static nlist *symtab;
+static const uint8_t *file_data;
+static uint32_t file_slice_offset;
+static uint32_t text_vm, text_size;
+static uint32_t data_vm, data_size;
+static uintptr_t text_real;
+static uint8_t *text_buf;
+static const nlist *symtab;
 static uint32_t nsyms;
 static const char *strtab;
-static uint32_t text_vm, text_size, data_vm, data_size;
-static uint8_t *text_buf;
-static uintptr_t text_real;
+static dysymtab_command *dysym;
 static uint32_t mod_init_addr, mod_init_count;
+static uintptr_t macho_entry_addr = 0;
 
-static uint32_t *thunk_head, *thunk_end;
+static uint32_t *thunk_head;
+static uint32_t *thunk_end;
+
 static const char **unimpl_names;
 static int unimpl_count;
 
+// Alignment helper for iOS 4-byte stack calls entering Vita runtime
 extern void ml_unimpl_entry(void);
 extern void ml_align_call(void);
 
@@ -112,6 +120,19 @@ static uintptr_t make_unimpl_thunk(const char *name) {
     return make_thunk(unimpl_count++, ml_unimpl_entry);
 }
 
+static int is_data_symbol(const char *name) {
+    if (!name) return 0;
+    if (strncmp(name, "_OBJC_CLASS_$_", 14) == 0) return 1;
+    if (strncmp(name, "_OBJC_METACLASS_$_", 18) == 0) return 1;
+    if (strncmp(name, "_OBJC_IVAR_$_", 13) == 0) return 1;
+    if (strncmp(name, "__objc_", 7) == 0) return 1;
+    if (strncmp(name, "___CF", 5) == 0) return 1;
+    if (strncmp(name, "_kCF", 4) == 0) return 1;
+    if (strncmp(name, "_kEAGL", 6) == 0) return 1;
+    if (strncmp(name, "__ZTV", 5) == 0) return 1;
+    return 0;
+}
+
 static uintptr_t make_unimpl_data(const char *name) {
     static struct {
         const char *name;
@@ -131,7 +152,7 @@ uintptr_t macho_sym(const char *name) {
     if (!symtab || !strtab)
         return 0;
     for (uint32_t i = 0; i < nsyms; i++) {
-        nlist *s = &symtab[i];
+        const nlist *s = &symtab[i];
         if (s->n_type & N_STAB)
             continue;
         if ((s->n_type & N_TYPE) != N_SECT)
@@ -144,6 +165,10 @@ uintptr_t macho_sym(const char *name) {
         }
     }
     return 0;
+}
+
+uintptr_t macho_entry(void) {
+    return macho_entry_addr;
 }
 
 void macho_hook(const char *name, void *dst) {
@@ -223,6 +248,7 @@ int macho_load(const char *bin_path, const char *rebase_path) {
 
     uint8_t *d = raw;
     file_slice_offset = 0;
+    macho_entry_addr = 0;
 
     // Detect FAT universal Mach-O (big-endian 0xCAFEBABE)
     if (file_len >= 8 && (memcmp(raw, "\xca\xfe\xba\xbe", 4) == 0 || memcmp(raw, "\xbe\xba\xfe\xca", 4) == 0)) {
@@ -259,12 +285,10 @@ int macho_load(const char *bin_path, const char *rebase_path) {
     file_data = d;
     uint32_t magic = *(uint32_t *)d;
     if (magic != 0xFEEDFACE)
-        fatal_error("Invalid Mach-O magic header (0x%08X != 0xFEEDFACE)", (unsigned)magic);
+        fatal_error("Invalid Mach-O 32-bit magic: 0x%08X (expected 0xFEEDFACE)", (unsigned)magic);
 
     uint32_t ncmds = *(uint32_t *)(d + 16);
     uint32_t off = 28;
-
-    dysymtab_command *dysym = NULL;
     segment_command *seg_text = NULL, *seg_data = NULL;
     section *sects[64];
     int nsects_total = 0;
@@ -273,7 +297,7 @@ int macho_load(const char *bin_path, const char *rebase_path) {
         uint32_t cmd = *(uint32_t *)(d + off);
         uint32_t size = *(uint32_t *)(d + off + 4);
         if (cmd == LC_SEGMENT) {
-            segment_command *s = (segment_command *)(d + off);
+            segment_command *s = (segment_command *)(d + off + 8);
             if (!strcmp(s->segname, "__TEXT"))
                 seg_text = s;
             else if (!strcmp(s->segname, "__DATA"))
@@ -288,6 +312,14 @@ int macho_load(const char *bin_path, const char *rebase_path) {
             strtab = (const char *)(d + p[2]);
         } else if (cmd == LC_DYSYMTAB) {
             dysym = (dysymtab_command *)(d + off + 8);
+        } else if (cmd == LC_MAIN) {
+            uint64_t entryoff = *(uint64_t *)(d + off + 8);
+            macho_entry_addr = (uintptr_t)entryoff;
+            l_info("LC_MAIN detected: entryoff = 0x%08X", (unsigned)entryoff);
+        } else if (cmd == LC_UNIXTHREAD) {
+            uint32_t *regs = (uint32_t *)(d + off + 16);
+            macho_entry_addr = regs[15];
+            l_info("LC_UNIXTHREAD detected: entry pc = 0x%08X", (unsigned)macho_entry_addr);
         } else if (cmd == LC_ENCRYPTION_INFO) {
             uint32_t cryptid = *(uint32_t *)(d + off + 16);
             if (cryptid != 0) {
@@ -307,6 +339,15 @@ int macho_load(const char *bin_path, const char *rebase_path) {
     text_size = ALIGN(seg_text->vmsize, 0x1000);
     data_vm = seg_data->vmaddr;
     data_size = ALIGN(seg_data->vmsize, 0x1000);
+
+    if (macho_entry_addr) {
+        if (macho_entry_addr < 0x1000000) {
+            macho_entry_addr = MACHO_SLIDE + text_vm + macho_entry_addr;
+        } else {
+            macho_entry_addr = MACHO_SLIDE + macho_entry_addr;
+        }
+        l_info("Primary Mach-O entry point resolved at 0x%08X", (unsigned)macho_entry_addr);
+    }
 
     l_info("__TEXT vm: 0x%08X (size 0x%08X) -> real 0x%08X",
            (unsigned)text_vm, (unsigned)text_size, (unsigned)(MACHO_SLIDE + text_vm));
@@ -358,11 +399,12 @@ int macho_load(const char *bin_path, const char *rebase_path) {
         uint32_t *indirect = (uint32_t *)(d + dysym->indirectsymoff);
         for (int s_idx = 0; s_idx < nsects_total; s_idx++) {
             section *s = sects[s_idx];
-            if (s->type == S_NON_LAZY_SYMBOL_POINTERS || s->type == S_LAZY_SYMBOL_POINTERS) {
+            uint32_t type = s->flags & 0xFF;
+            if (type == S_NON_LAZY_SYMBOL_POINTERS || type == S_LAZY_SYMBOL_POINTERS) {
                 uint32_t nslots = s->size / 4;
                 uint32_t *slots = (uint32_t *)(MACHO_SLIDE + s->addr);
                 for (uint32_t i = 0; i < nslots; i++) {
-                    uint32_t sym_idx = indirect[s->r1 + i];
+                    uint32_t sym_idx = indirect[s->reserved1 + i];
                     if (sym_idx & INDIRECT_SYMBOL_LOCAL) {
                         slots[i] += MACHO_SLIDE;
                     } else if (!(sym_idx & INDIRECT_SYMBOL_ABS)) {
@@ -375,7 +417,11 @@ int macho_load(const char *bin_path, const char *rebase_path) {
                                 slots[i] = make_thunk(imp->addr, ml_align_call);
                             }
                         } else {
-                            slots[i] = make_unimpl_thunk(name);
+                            if (is_data_symbol(name)) {
+                                slots[i] = make_unimpl_data(name);
+                            } else {
+                                slots[i] = make_unimpl_thunk(name);
+                            }
                         }
                     }
                 }
@@ -400,12 +446,13 @@ int macho_load(const char *bin_path, const char *rebase_path) {
 void macho_run_inits(void) {
     if (!mod_init_addr || !mod_init_count)
         return;
-    l_info("Executing %u global constructors (__mod_init_func)...", (unsigned)mod_init_count);
-    uint32_t *funcs = (uint32_t *)mod_init_addr;
+    l_info("Executing %u static C++ constructors (__mod_init_func)...", (unsigned)mod_init_count);
+    uint32_t *inits = (uint32_t *)mod_init_addr;
     for (uint32_t i = 0; i < mod_init_count; i++) {
-        if (funcs[i]) {
-            uintptr_t fn = funcs[i] + MACHO_SLIDE;
-            call_guest((void *)fn, 0, 0, 0, 0);
+        if (inits[i]) {
+            void (*fn)(void) = (void (*)(void))inits[i];
+            call_guest(fn, 0, 0, 0, 0);
         }
     }
+    l_info("Static inits executed.");
 }

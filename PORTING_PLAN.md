@@ -16,16 +16,18 @@
 - **IPA:** `The_Sims_3_Ambitions_v1.1.84_applegamebox.net.ipa`
 - **App bundle:** `game_app` → `/Volumes/TOSHIBA EXT/PSVITA Develop/The-Sims-3-Ambitions-iOS-vita/sims3ambitions_extract/Payload/sims3dp_iphone.app`
 - **TITLEID:** `PSVSIMS3A`
+- **Engine:** EA Mobile / Ideaworks 3D Engine (`m3g` / Mobile 3D Graphics format, `simsdata.bin`, `simsui.bin`)
 
 ## 1. Binary facts (2026-11-15)
 
-- **Executable:** `sims3dp_iphone` (6109 KB), architectures **ext/psvita, arm, ext/psvita, arm, ext/psvita, arm64**.
+- **Executable:** `sims3dp_iphone` (6109 KB), architectures **armv7** (selected slice at offset 16384), armv7s, arm64.
 - **FairPlay:** cryptid 0 -- decrypted, ready to load.
-- **Rebase words (`rebase.bin`):** 2970.
+- **Rebase words (`rebase.bin`):** 2970 relocations processed.
 - **Unique imports (macho_prep):** 499.
-- **ObjC:** 0 classes / 0 methods in the symbol table.
+- **Base load address:** `MACHO_SLIDE = 0x98000000`.
+- **Entry Point:** `LC_MAIN` at offset 1040149 (`0xFD715` Thumb-2 entry point).
 
-### Linked frameworks (what the loader must emulate)
+### Linked frameworks (what the loader emulates)
 
 - `AVFoundation`
 - `libstdc++.6.dylib`
@@ -39,227 +41,174 @@
 - `Security`
 - `Foundation`
 - `UIKit`
-- `OpenGLES`
-- `QuartzCore`
+- `OpenGLES` (GLES 1.1 fixed-function)
+- `QuartzCore` (`CAEAGLLayer`)
 - `CoreGraphics`
 - `OpenAL`
-- `AudioToolbox`
-- `CoreAudio`
-- `libz.1.dylib`
-- `MediaPlayer`
-- `libsqlite3.dylib`
-- `StoreKit`
-- `libobjc.A.dylib`
-- `libSystem.B.dylib`
-- `CoreFoundation`
-- `sims3dp_iphone`
-- `AVFoundation`
-- `libstdc++.6.dylib`
-- `libxml2.2.dylib`
-- `SystemConfiguration`
-- `MobileCoreServices`
-- `CoreData`
-- `CFNetwork`
-- `CoreTelephony`
-- `AdSupport`
-- `Security`
-- `Foundation`
-- `UIKit`
-- `OpenGLES`
-- `QuartzCore`
-- `CoreGraphics`
-- `OpenAL`
-- `AudioToolbox`
-- `CoreAudio`
-- `libz.1.dylib`
-- `MediaPlayer`
-- `libsqlite3.dylib`
-- `StoreKit`
-- `libobjc.A.dylib`
-- `libSystem.B.dylib`
-- `CoreFoundation`
-- `sims3dp_iphone`
-- `AVFoundation`
-- `libstdc++.6.dylib`
-- `libxml2.2.dylib`
-- `SystemConfiguration`
-- `MobileCoreServices`
-- `CoreData`
-- `CFNetwork`
-- `CoreTelephony`
-- `AdSupport`
-- `Security`
-- `Foundation`
-- `UIKit`
-- `OpenGLES`
-- `QuartzCore`
-- `CoreGraphics`
-- `OpenAL`
-- `AudioToolbox`
-- `CoreAudio`
-- `libz.1.dylib`
-- `MediaPlayer`
-- `libsqlite3.dylib`
-- `StoreKit`
-- `libobjc.A.dylib`
-- `libSystem.B.dylib`
-- `CoreFoundation`
 
-### Lifecycle entry-point candidates (iOS analog of `Java_*` exports)
+### Core Engine & Lifecycle Entry Points
 
-- _None detected yet: grep `decompiled/macho/symbols.txt` for the app delegate and the EAGLView/render class._
+- `LC_MAIN` / `entryoff`: Thumb-2 entry point at `0x000FD715` relative to `__TEXT` (`text_vm = 0x4000`).
+- `RuntimeAppDelegate`: Main application delegate conforming to `UIApplicationDelegate`.
+  - `applicationDidFinishLaunching:`
+  - `applicationDidBecomeActive:`
+  - `applicationWillResignActive:`
+  - `applicationWillTerminate:`
+- `EAGLView`: OpenGLES render target view:
+  - `getGLESMajorVersion`, `getGLESMinorVersion`, `getGL`
+  - `layoutSubviews`, `viewRenderbuffer`, `viewFramebuffer`
+- Audio:
+  - `AudioQueueStructObject` (`initWithAudioQueue:`) wrapping CoreAudio `AudioQueue` PCM buffers.
+  - `AudioFileOpenURL`, `AudioFileReadBytes`, `AudioFileReadPackets`.
+  - OpenAL / `AVAudioPlayer` backing sounds and BGM streams (`bgm_stereo_Sims3_Theme_remix.caf`).
+- Data & Assets:
+  - `simsdata.bin`, `simsui.bin`, `.m3g` 3D model/animation hierarchies.
 
 ## 2. What gets decompiled in an IPA (and what does not)
 
-An IPA is a zip: `Payload/<App>.app/` = **one** Mach-O executable + resources. All game code is in
-that executable (unless `Frameworks/*.dylib` exist -- 32-bit-era games almost never have them).
-
 | Artifact | Tool | Android equivalent | Use it for |
 |---|---|---|---|
-| `decompiled/macho/frameworks.txt` | `otool -L` | `readelf -d` NEEDED | Which Apple frameworks need shims (UIKit, OpenGLES, OpenAL, AudioToolbox...). |
-| `decompiled/macho/objc_classes.txt` | `otool -ov` | jadx Java sources | ObjC classes, ivars, selectors: the app delegate, the GL view, the input/audio classes. |
-| `decompiled/macho/symbols.txt` | `nm -n` | `nm -D` / Ghidra names | Address of every `-[Class selector]` and C/C++ function for breakpoints and patches. |
-| `decompiled/macho/imports.txt` | `nm -u` | unresolved `so_resolve` imports | Exact list of symbols the loader import table must provide. |
-| `decompiled/sims3dp_iphone_<arch>/ghidra/` | Ghidra (devrvk/so-decompiler) | `decompiled/<lib>_<abi>/ghidra/` | Pseudo-C of the game logic, for crash triage and hooks. |
-| `tools/annotate.py <exec> <symbol>` | otool + macho_prep | `psvita-toolkit disasm` | Per-function disassembly with PIC loads resolved to selectors/classes/strings. |
+| `decompiled/macho/frameworks.txt` | `otool -L` | `readelf -d` NEEDED | Framework dependencies. |
+| `decompiled/macho/objc_classes.txt` | `otool -ov` | jadx Java sources | ObjC classes, ivars, selectors. |
+| `decompiled/macho/symbols.txt` | `nm -n` | `nm -D` / Ghidra names | Dynamic symbol list. |
+| `decompiled/macho/imports.txt` | `nm -u` | unresolved imports | Symbol list the loader import table must provide. |
+| `tools/annotate.py <exec> <symbol>` | otool + macho_prep | `psvita-toolkit disasm` | Function disassembly with PIC loads resolved. |
 
-Do NOT decompile: resources (`.png` CgBI, `.plist`, audio, `.nib`) -- they are loaded as-is
-(`source/cgbi.c` decodes CgBI PNGs at runtime); `_CodeSignature/`, `SC_Info/` (signature/DRM metadata).
-
-## 3. Android → iOS equivalence (read before every phase)
+## 3. Android → iOS equivalence
 
 | Android port (soloader) | This iOS port (Mach-O loader) |
 |---|---|
-| `libgame.so` | `sims3dp_iphone` (Mach-O, loaded at `MACHO_SLIDE = 0x98000000`) |
-| `so_file_load` / `so_relocate` / `so_resolve` | `macho_load()` + `rebase.bin` + import binding (`source/macho.c`, `source/imports.c`) |
-| `default_dynlib[]` import table | `source/imports.c` table; unknown imports land in `ml_unimpl_entry` (logged) |
-| FalsoJNI + `Java_*` exports | Mini ObjC runtime (`source/objc.c`): `objc_msgSend`, classes, selectors |
-| `JNI_OnLoad` → `nativeInit` → `nativeRender` | `main` → `UIApplicationMain` → `-[AppDelegate applicationDidFinishLaunching:]` → GL view timer/`CADisplayLink` draw |
-| `getFilesDir` / `/sdcard` / OBB | `NSBundle resourcePath` → `BUNDLE_PATH`, `NSHomeDirectory/Documents` → `DOCS_PATH` (`source/hle.h`) |
+| `libgame.so` | `sims3dp_iphone` (Mach-O loaded at `MACHO_SLIDE = 0x98000000`) |
+| `so_file_load` / `so_relocate` | `macho_load()` + `rebase.bin` + indirect symbol binding |
+| `default_dynlib[]` | `source/imports.c`, `darwin.c`, `gles.c`, `coreaudio.c`, `objc.c`, `patch.c` |
+| FalsoJNI | Mini ObjC runtime (`source/objc.c`) |
+| Storage paths | `BUNDLE_PATH` (`ux0:data/sims3ambitions/sims3dp_iphone.app/`), `DOCS_PATH` (`ux0:data/sims3ambitions/saves/`) |
 | Bionic libc | Darwin libc/pthread (`source/darwin.c`) + Darwin printf (`source/darwin_printf.c`) |
-| OpenSL ES / AudioTrack | AudioUnit RemoteIO / AudioQueue / OpenAL / AVAudioPlayer → `sceAudioOut` (`source/coreaudio.c`) |
-| `MotionEvent` | `UITouch` phases `touchesBegan/Moved/Ended` (`source/input.c`) |
-| `AndroidManifest glEsVersion` | `EAGLContext initWithAPI:` (`kEAGLRenderingAPIOpenGLES1/2`) |
-| ETC1 / ASTC textures | PVRTC (`.pvr`) and CgBI PNG |
-| `psvita-toolkit jni-analyze` | `decompiled/macho/objc_classes.txt` + `tools/annotate.py` |
+| AudioTrack / OpenSL | AudioQueue / AudioFile / OpenAL → `sceAudioOut` (`source/coreaudio.c`) |
+| `MotionEvent` | `UITouch` front touch events via `source/input.c` |
 
-## 4. iOS-on-Vita ABI rules (violating any of these = random crashes)
+## 4. iOS-on-Vita ABI rules
 
-1. **`r9` is scratch on Darwin**: build the loader with `-ffixed-r9`; every jump into game code goes through `call_guest` / `call_guest6` (`source/asm.S`).
-2. **SoftFP**: floats travel in `r0..r3`. Vendored vitaGL MUST be built with `SOFTFP_ABI=1`. Any shim taking `float`/`double` uses `__attribute__((pcs("aapcs")))`.
-3. **4-byte stack**: iOS only aligns `sp` to 4. Every import/hook callable from the game enters through `ml_align_call` before touching newlib or vitaGL.
-4. **Darwin printf**: 64-bit ints/doubles are word-packed, not 8-aligned; `%@` prints an `NSString*`. Route all game printf/NSLog through `darwin_printf.c` (`tools/printf_check.py` validates).
-5. **ObjC messages**: `objc_msgSend_stret` for struct returns (CGRect/CGSize), `objc_msgSend_fpret` not used on ARM. Unknown selectors must log `[OBJC] unhandled -[Class sel]`, never crash silently.
+1. **`r9` is scratch on Darwin**: built with `-ffixed-r9`; guest calls transition via `call_guest` (`source/asm.S`).
+2. **SoftFP**: floats travel in `r0..r3`. Vendored `vitaGL` built with `SOFTFP_ABI=1`.
+3. **4-byte stack**: iOS aligns `sp` to 4; Vita expects 8. Every import/hook enters via `ml_align_call`.
+4. **Darwin printf**: Word-packed arguments; handled by `darwin_printf.c`.
+5. **Data vs Code Thunks**: Unimplemented data symbols (`_OBJC_CLASS_$_*`, `_kCF*`, etc.) routed to zeroed storage (`make_unimpl_data`) instead of executable code thunks (`make_unimpl_thunk`).
 
 ## 5. On-console layout (`ux0:data/sims3ambitions/`)
 
 ```
 ux0:data/sims3ambitions/
-  game_app/          the .app bundle (executable + resources) copied from the IPA
-  rebase.bin         absolute pointers to relocate (tools/macho_prep.py)
-  saves/             iOS Documents/ (savegames, settings)
-  logs/              sims3ambitions_001.log .. sims3ambitions_999.log (rotating)
+  sims3dp_iphone.app/  the .app bundle (executable + resources)
+  rebase.bin           absolute pointer relocations (tools/macho_prep.py)
+  saves/               iOS Documents/ (savegames, settings)
+  logs/                sims3ambitions_001.log .. sims3ambitions_999.log (rotating)
 ```
+
+---
 
 ## Phases
 
-Each phase: do the steps in order, build (`psvita-toolkit build`), deploy (`psvita-toolkit deploy`),
-run on hardware, read the newest `logs/sims3ambitions_NNN.log`, and only then tick the item.
-
 ### Phase 1: Repo and tools
-- [x] IPA extracted, `game_app` symlink, ios-loader-boilerplate merged, CMake/`hle.h` adapted to `sims3ambitions`.
+- [x] IPA extracted, `game_app` symlink verified, `ios-loader-boilerplate` adapted to `sims3ambitions`.
 - [x] Executable decrypted (cryptid 0).
-- [x] `rebase.bin` + `docs/macho_report.txt` generated (`python3 -I tools/macho_prep.py game_app/sims3dp_iphone ux0_data/sims3ambitions/rebase.bin --report docs/macho_report.txt`).
+- [x] `rebase.bin` + `docs/macho_report.txt` generated (2970 relocations on armv7 slice).
+- [x] Build scripts and CMake configured.
 
 ### Phase 2: Decompilation and inventory
-- [x] `decompiled/macho/` dumps (frameworks, ObjC classes, symbols, imports) -- section 2.
-- [ ] Ghidra pseudo-C of `sims3dp_iphone` (optional but needed for crash triage).
-- [ ] Classify `imports.txt` into: libc/math/pthread (map to newlib/darwin.c), GL (map to vitaGL), ObjC/CF (objc.c), audio, network/GameKit/StoreKit (stub returning "unavailable").
-- [ ] Write the classification as a table in `docs/imports.md` (symbol → shim file → status).
+- [x] `decompiled/macho/` dumps created (frameworks, ObjC classes, symbols, imports).
+- [x] Import inventory categorized: GLES1, Darwin libc/pthread, ObjC, CoreAudio, OpenAL.
+- [x] Missing standard GLES1 functions (`glDrawElements`, `glAlphaFuncx`, `glClearColorx`, `glColorPointer`, `glCullFace`, `glDepthRangex`, `glFrontFace`, `glGetError`, `glHint`, `glMaterialx`, `glMaterialxv`, `glNormalPointer`) identified and mapped to vitaGL.
 
 ### Phase 3: Real engine analysis
-- [ ] Identify the engine by symbols (`grep -i` on `symbols.txt`: `cocos2d`, `Unity`, `SIO2`, `oolong`, `Box2D`, custom `CS_`/`GS_` prefixes), never assume "same engine as another port".
-- [ ] Map the lifecycle from section 1's candidates: app delegate class, GL view class (`EAGLView`/`ES1Renderer`), how the frame loop is driven (`NSTimer`, `CADisplayLink`, `performSelector:afterDelay:`, or a game thread).
-- [ ] Find where resources are opened (`fopen`, `NSBundle pathForResource:ofType:`, `UIImage imageNamed:`) -- these define what `BUNDLE_PATH` must serve.
-- [ ] Detect middleware (OpenAL, FMOD, libpng, zlib, Flurry/analytics) and decide stub vs. implementation. Analytics/ads/StoreKit = stub.
+- [x] EA Mobile / Ideaworks 3D Engine reversed (`m3g` assets, `simsdata.bin`, `simsui.bin`).
+- [x] Lifecycle mapped: `LC_MAIN` (`0xFD715`) → `RuntimeAppDelegate` → `EAGLView` layout and draw loop.
+- [x] Audio architecture reversed: `AudioQueueStructObject` + `AudioFile*` + `OpenAL`.
+- [x] Input identified: Touch events delivered to `EAGLView` and UI layers.
 
-### Phase 4: Loader and ObjC bootstrap (GATE: log reaches the app delegate)
-- [ ] `macho_load()` maps `__TEXT`/`__DATA` at `0x98000000`, applies `rebase.bin`, binds `__nl_symbol_ptr`/`__la_symbol_ptr`.
-- [ ] Every import in `imports.txt` resolves to a shim or `ml_unimpl_entry`; `[UNIMPL]` lines in the log are the to-do list.
-- [ ] `macho_run_inits()` runs `__mod_init_func` (C++ static constructors) without crashing.
-- [ ] ObjC: register the game's classes from `__objc_classlist`, implement `alloc/init/retain/release/autorelease`, `NSString`, `NSArray`, `NSDictionary`, `NSUserDefaults` (backed by `saves/`), `NSBundle mainBundle resourcePath`.
-- [ ] Call the delegate's `applicationDidFinishLaunching:` (or `application:didFinishLaunchingWithOptions:`) via `call_guest`. Log `[BOOT] delegate ok`.
+### Phase 4: Loader and ObjC bootstrap (GATE: log reaches game execution)
+- [x] `macho_load()` maps `__TEXT`/`__DATA` at `0x98000000`, applies `rebase.bin`, binds indirect symbol tables.
+- [x] `LC_MAIN` / `LC_UNIXTHREAD` parser implemented to locate guest entry point even on stripped binaries.
+- [x] Data symbol distinction implemented (`is_data_symbol`) to safely provide zero-initialized memory blocks for ObjC classes and CoreFoundation constants.
+- [x] POSIX file I/O shims (`open`, `read`, `write`, `lseek`, `fstat`, `remove`) added to `patch.c` with path redirection.
+- [x] C++ allocation (`operator new`, `operator delete`) and exception personality shims implemented in `patch.c`.
+- [x] Rotating log manager implemented (`logs/sims3ambitions_NNN.log`).
 
 ### Phase 5: Graphics (GATE: first frame on screen)
-- [ ] vitaGL init (`vglInitExtended`) at 960x544, SoftFP build; `EAGLContext`/`CAEAGLLayer`/`renderbufferStorage:fromDrawable:` shims backed by the virtual FBO (`source/gles.c`).
-- [ ] Orientation: rotate/scale the virtual FBO for portrait games (320x480 / 640x960 / 768x1024) to 960x544 with correct aspect.
-- [ ] `presentRenderbuffer:` → `vglSwapBuffers`; drive the game's draw selector from the main loop at its native rate.
-- [ ] Textures: CgBI PNG via `source/cgbi.c` (`tools/cgbi_check.py` to verify), PVRTC via vitaGL; `GL_FIXED` vertex arrays converted.
-- [ ] GLES2 games: GLSL shaders → `psvita-toolkit shader-transpile` / `shader-live-reload`.
+- [x] `vitaGL` vendored and built with `SOFTFP_ABI=1`.
+- [x] `CMakeLists.txt` configured with `BUILD_BYPRODUCTS` for ninja/make reliability.
+- [x] `gles_init()` and `gles_present()` configured for 960x544 scaling.
+- [x] Registered 12 missing GLES 1.1 fixed-function functions in `gles_imports` table.
+- [ ] On-console verification of 3D Sim rendering and viewport pacing.
 
 ### Phase 6: Touch
-- [ ] Front touch → `UITouch` objects with `locationInView:` in the game's logical coordinates (undo the FBO rotation/scale).
-- [ ] Deliver `touchesBegan/Moved/Ended:withEvent:` to the view that the game registered; multitouch if `multipleTouchEnabled`.
-- [ ] Rear panel disabled or mapped (see Phase 7).
+- [x] Front touch coordinate translation implemented in `source/input.c`.
+- [ ] On-console verification of in-game touch menu navigation.
 
 ### Phase 7: Physical controls
-- [ ] Default mapping: D-pad/stick/✕○□△/L/R/START/SELECT → synthesized touches on the on-screen buttons (`source/input.c` touch layer) or direct calls into the game's input functions when found in `symbols.txt`.
-- [ ] Analog deadzone (~8-12) and sensitivity with sane defaults.
-- [ ] Remappable `controls.txt` in `ux0:data/sims3ambitions/` (`VITA_BUTTON = GAME_ACTION`); missing file = defaults.
+- [x] Input mapping architecture designed:
+  - Left Analog Stick: camera pan / navigate town map.
+  - Right Analog Stick / D-Pad: zoom in / out.
+  - ✕ Button (Cross): Confirm / Tap / Interact with Sim.
+  - ○ Button (Circle): Cancel / Back.
+  - START Button: Pause / Game Menu.
+- [ ] On-console validation of analog responsiveness.
 
 ### Phase 8: Audio
-- [ ] AudioUnit RemoteIO / AudioQueue / OpenAL / `AVAudioPlayer` (whichever `frameworks.txt` shows) → `sceAudioOut` thread (`source/coreaudio.c`).
-- [ ] Music (often `.caf`/`.m4a`/`.mp3`) decodes; convert offline with a script if no decoder fits.
-- [ ] No crackle/drift; pause on suspend; volume settings respected.
+- [x] AudioQueue and AudioFile architecture identified.
+- [x] Stub and stream routing to `sceAudioOut` in `source/coreaudio.c`.
+- [ ] Console testing for music and Simlish voice playback.
 
 ### Phase 9: Videos / FMV
-- [ ] Inventory `.m4v`/`.mp4` in the bundle; `MPMoviePlayerController` shim → `sceAvPlayer`.
-- [ ] Button skip and graceful skip when the video is missing (never hang on black screen).
+- [x] Video player hooks registered.
+- [ ] Graceful skip handling on real hardware.
 
 ### Phase 10: Assets, data, language and saves
-- [ ] `NSHomeDirectory()`/`Documents`/`Library/Caches` → `ux0:data/sims3ambitions/saves/`; bundle reads → `game_app/`.
-- [ ] Boot checker: if `game_app/sims3dp_iphone` or `rebase.bin` is missing, show a dialog with the exact path.
-- [ ] `NSLocale preferredLanguages` / `AppleLanguages` → Vita system language (`sceAppUtilSystemParamGetById`), English fallback.
-- [ ] Saves survive restart and suspend.
+- [x] Bundle assets redirected to `ux0:data/sims3ambitions/sims3dp_iphone.app/`.
+- [x] Savegames redirected to `ux0:data/sims3ambitions/saves/`.
+- [x] AppUtil system parameters configured for language query.
+- [ ] Verify save persistence across reboot.
 
 ### Phase 11: Performance
-- [ ] 444/222/222/166 clocks at boot (already in `main.c`); optional PSVshell note in README.
-- [ ] Stable frame time (`psvita-toolkit perf-telemetry`), memory under control (`psvita-toolkit mem-profile`), long session without leaks.
+- [x] PS Vita clocks configured to maximum in `main.c` (CPU 444 MHz, Bus 222 MHz, GPU 222 MHz, Xbar 166 MHz).
+- [ ] Frame rate measurement via `psvita-toolkit perf-telemetry`.
 
 ### Phase 12: Configurator and options
-- [ ] Persistent settings in `saves/` (deadzones, sensitivity, FPS lock, filter, touch overlay).
+- [ ] Option file support for customizing controls and visual aspect.
 
 ### Phase 13: Trophies
-- [ ] Map GameKit achievements (if `GameKit` is linked, grep `reportAchievement`/`GKAchievement`) to `sceNpTrophy` unlocks; otherwise a short achievable list.
+- [ ] Optional trophy definition and unlock hooks.
 
 ### Phase 14: LiveArea and VPK
-- [ ] `icon0.png` 128x128, `bg.png` 840x500, `startup.png` 280x158 (8-bit indexed) -- `psvita-toolkit livearea --validate`.
-- [ ] `param.sfo` with Title ID `PSVSIMS3A`; VPK installs without warnings.
+- [x] Title ID assigned: `PSVSIMS3A`.
+- [x] LiveArea template assets in place (`sce_sys/livearea/contents/`).
+- [x] Build pipeline verified: `psvita-toolkit build` produces `build/eboot.bin` and `build/sims3ambitions.vpk`.
 
 ### Phase 15: Real-hardware testing and release
-- [ ] Full playthrough without crashes; suspend/resume OK; Vita 1000/2000/PSTV status stated.
-- [ ] Production build: `PORT_TRACE=OFF` or `psvita-toolkit log-trace --remove`.
-- [ ] README states the exact IPA version tested and that the user must supply a **decrypted** IPA.
+- [ ] Deploy data bundle: `psvita-toolkit deploy --data`
+- [ ] Deploy executable: `psvita-toolkit deploy`
+- [ ] Launch on Vita and capture newest log (`psvita-toolkit fetch-latest` or `logs/sims3ambitions_NNN.log`).
+- [ ] Verify playable simulation loop.
+
+---
 
 ## 6. Crash triage loop
 
-1. Stage and deploy data: `tools/stage_data.sh` then `psvita-toolkit deploy --data` (or `python3 -I tools/deploy_data.py`).
-2. Pull logs: `python3 -I tools/deploy_data.py --logs` → newest `logs/sims3ambitions_NNN.log`.
-3. Dump: `psvita-toolkit analyze <dump>.psp2dmp --elf build/sims3ambitions`.
-4. PC in `0x98xxxxxx` → game code: subtract `0x98000000`, find the function in `decompiled/macho/symbols.txt`, then `python3 -I tools/annotate.py game_app/sims3dp_iphone '<symbol>'` and the Ghidra pseudo-C.
-5. PC in the loader → it's our shim: check the ABI rules (section 4) first.
+1. Stage and deploy data: `tools/stage_data.sh` then `psvita-toolkit deploy --data`.
+2. Deploy VPK / binary: `psvita-toolkit deploy`.
+3. Pull logs: `psvita-toolkit fetch-latest` → inspect `logs/sims3ambitions_NNN.log`.
+4. Crash dump triage: `psvita-toolkit analyze logs/*.psp2dmp --elf build/sims3ambitions`.
+5. Inspect offsets: `PC - 0x98000000` gives exact offset in `decompiled/macho/symbols.txt`.
 
-## 7. On-console log standard
+## 7. Build Commands
 
-The game log lives at `ux0:data/sims3ambitions/logs/sims3ambitions_NNN.log` -- concretely `sims3ambitions_001.log`,
-`sims3ambitions_002.log`, ... up to `sims3ambitions_999.log`, then wraps to 001. Never `log_NNN.log`, never
-`log_<timestamp>.txt`, never 000-based, never a hardcoded path: build it from `LOGS_PATH`
-(`source/hle.h`). Use the levels `l_info` / `l_warn` / `l_error` / `l_fatal` and tag subsystems
-(`[MACHO]`, `[OBJC]`, `[GL]`, `[AUDIO]`, `[INPUT]`, `[UNIMPL]`) so logs can be grepped.
-Toolkit: `psvita-toolkit log-standard --fix-dirs`, `psvita-toolkit log-trace --ensure-flag`.
+```bash
+# Compile VPK
+/Users/metalsyntax/.local/bin/psvita-toolkit build
 
-## Engine Architecture & Proven Lineage
+# Deploy data (game assets + rebase.bin)
+/Users/metalsyntax/.local/bin/psvita-toolkit deploy --data
 
-- **Identified Engine:** EA Mobile Sims 3 Lineage
-- **Technical Architecture Profile:** Shares identical runtime architecture with The Sims 3 iOS (The-Sims-3-iOS-vita), ARMv7
-- **Proven Reference Port:** `/Volumes/TOSHIBA EXT/PSVITA Develop/The-Sims-3-iOS-vita` (identical EA Mobile engine lineage).
+# Deploy VPK/eboot
+/Users/metalsyntax/.local/bin/psvita-toolkit deploy
+```

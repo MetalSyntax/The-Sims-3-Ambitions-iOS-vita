@@ -11,6 +11,11 @@
 void log_open(const char *path);
 
 /**
+ * @brief Logs a debug message.
+ */
+void l_debug(const char *fmt, ...);
+
+/**
  * @brief Logs an informational message.
  */
 void l_info(const char *fmt, ...);

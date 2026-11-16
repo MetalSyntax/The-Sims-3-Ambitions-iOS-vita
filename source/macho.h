@@ -35,6 +35,11 @@ void macho_run_inits(void);
 uintptr_t macho_sym(const char *name);
 
 /**
+ * @brief Returns the primary entry point parsed from LC_MAIN or LC_UNIXTHREAD.
+ */
+uintptr_t macho_entry(void);
+
+/**
  * @brief Overwrites a guest function entry point with an unconditional trampoline hook.
  * @param[in] name Target guest symbol name.
  * @param[in] dst Destination hook function pointer.

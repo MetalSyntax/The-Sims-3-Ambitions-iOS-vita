@@ -11,7 +11,7 @@ sys.path.insert(0, __file__.rsplit('/', 1)[0])
 from macho_prep import parse  # noqa: E402
 
 B = sys.argv[1]
-d, segs, sects, (symoff, nsyms, stroff, _), dysym = parse(B)
+d, segs, sects, (symoff, nsyms, stroff, _), dysym, _, _ = parse(B)
 names, syms = [], []
 for i in range(nsyms):
     strx, ntype, nsect, ndesc, value = struct.unpack_from('<IBBhI', d, symoff + i * 12)

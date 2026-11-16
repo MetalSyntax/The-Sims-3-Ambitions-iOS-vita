@@ -110,6 +110,8 @@ int main(int argc, char *argv[]) {
         entry = macho_sym("_SDL_main");
     if (!entry)
         entry = macho_sym("_startClet");
+    if (!entry)
+        entry = macho_entry();
 
     if (entry) {
         l_info("Jumping to guest entry point at 0x%08X (Mach-O offset 0x%08X)",
