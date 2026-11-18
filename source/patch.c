@@ -1,112 +1,129 @@
-/**
- * @file patch.c
- * @brief Game-specific hooks, memory patches, and custom symbol intercepts for The Sims 3 Ambitions.
- */
-#include <fcntl.h>
-#include <stdarg.h>
-#include <stdio.h>
+// Parches de The Sims 3 Ambitions, heredados de The Sims 3 / Medieval (mismo framework EA). Solo lo que el análisis
+// imports sin implementar sale en el log como "unimpl" y se ataca con evidencia de consola.
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
-#include "darwin.h"
 #include "imports.h"
 #include "log.h"
 #include "macho.h"
+#include "objc.h"
 #include "patch.h"
 
-// C++ allocation & exception personality stubs
-static void *cpp_new(size_t sz) { return malloc(sz); }
-static void cpp_delete(void *p) { free(p); }
-static int dummy_personality(void) { return 0; }
+const char *darwin_path(const char *in, char *out, size_t outlen); // darwin.c
 
-// POSIX file descriptor shims
-static int p_open(const char *path, int flags, int mode) {
+// ---------------------------------------------------------------- zlib (z_stream = 56 bytes en los dos)
+void crc32(void), deflate(void), deflateEnd(void), deflateInit2_(void), get_crc_table(void), inflate(void),
+    inflateEnd(void), inflateInit2_(void);
+
+// ---------------------------------------------------------------- sqlite3 (SceSqlite, misma API)
+extern int sqlite3_open(const char *, void **);
+void sqlite3_bind_int(void), sqlite3_changes(void), sqlite3_column_int(void), sqlite3_last_insert_rowid(void),
+    sqlite3_prepare(void), sqlite3_reset(void);
+static int p_sqlite3_open(const char *path, void **db) {
     char p[512];
-    int fd = open(darwin_path(path, p, sizeof(p)), flags, mode);
-    l_debug("open(%s, 0x%x) -> %d", p, flags, fd);
-    return fd;
-}
-
-static int p_fstat(int fd, struct stat *st) {
-    return fstat(fd, st);
-}
-
-static off_t p_lseek(int fd, off_t offset, int whence) {
-    return lseek(fd, offset, whence);
-}
-
-static ssize_t p_read(int fd, void *buf, size_t count) {
-    return read(fd, buf, count);
-}
-
-static ssize_t p_write(int fd, const void *buf, size_t count) {
-    return write(fd, buf, count);
-}
-
-static int p_remove(const char *path) {
-    char p[512];
-    return remove(darwin_path(path, p, sizeof(p)));
-}
-
-static char *p_getenv(const char *name) {
-    return getenv(name);
-}
-
-static int p_setenv(const char *name, const char *val, int overwrite) {
-    return setenv(name, val, overwrite);
-}
-
-static int p_printf(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    char buf[1024];
-    int r = vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    l_info("[GUEST PRINTF] %s", buf);
+    int r = sqlite3_open(darwin_path(path, p, sizeof(p)), db);
+    l_info("sqlite3_open(%s) -> %d", p, r);
     return r;
 }
 
-static int p_fprintf(FILE *stream, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    char buf[1024];
-    int r = vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    l_info("[GUEST FPRINTF] %s", buf);
+// ---------------------------------------------------------------- libxml2 (libxml2.a del VitaSDK)
+// Sin headers de libxml: solo se toman las direcciones.
+void xmlCopyNode(void), xmlDocDumpFormatMemory(void), xmlDocDumpMemory(void), xmlDocGetRootElement(void),
+    xmlFreeDoc(void), xmlFreeNode(void), xmlGetLastError(void), xmlNodeDumpOutput(void), xmlNodeListGetString(void),
+    xmlOutputBufferClose(void), xmlOutputBufferFlush(void), xmlParseDoc(void), xmlReadMemory(void),
+    xmlResetLastError(void), xmlXPathEvalExpression(void), xmlXPathFreeContext(void), xmlXPathFreeObject(void),
+    xmlXPathNewContext(void);
+extern void *xmlFree; // variable (puntero a free) que el juego llama directo
+extern void *xmlOutputBufferCreateIO(void *iowrite, void *ioclose, void *ioctx, void *encoder);
+// Los callbacks de escritura son código del juego: se llaman con call_guest (r9) desde libxml.
+typedef struct {
+    void *wr, *cl, *ctx;
+} xio;
+static int xio_write(xio *x, const char *buf, int len) {
+    return (int)call_guest(x->wr, (uint32_t)x->ctx, (uint32_t)buf, (uint32_t)len, 0);
+}
+static int xio_close(xio *x) {
+    int r = x->cl ? (int)call_guest(x->cl, (uint32_t)x->ctx, 0, 0, 0) : 0;
+    free(x);
     return r;
 }
+static void *p_xmlOutputBufferCreateIO(void *wr, void *cl, void *ctx, void *enc) {
+    xio *x = malloc(sizeof(*x));
+    *x = (xio){wr, cl, ctx};
+    void *b = xmlOutputBufferCreateIO(wr ? (void *)xio_write : NULL, (void *)xio_close, x, enc);
+    if (!b)
+        free(x);
+    return b;
+}
 
-static int p_UIApplicationMain(int argc, char *argv[], void *principalClassName, void *delegateClassName) {
-    l_info("UIApplicationMain called (argc=%d)", argc);
+// ---------------------------------------------------------------- libc
+// newlib: FILE con el mismo _p/_r que Darwin (macro getc inline del juego -> __srget al vaciarse el buffer).
+// En el hosttest el FILE es de glibc (otra disposición): ahí no hay equivalente y se devuelve EOF.
+#ifdef HOSTTEST
+static int p_srget(void *f) { return -1; }
+#else
+void __srget(void);
+#endif
+static int p_zero(void) { return 0; }
+// statfs de Darwin 32 bits (sin INODE64): f_bsize@4 f_iosize@8 f_blocks@12 f_bfree@16 f_bavail@20
+static int p_statfs(const char *path, uint32_t *st) {
+    memset(st, 0, 64);
+    st[1] = st[2] = 4096;
+    st[3] = 1 << 20;
+    st[4] = st[5] = 1 << 18; // 1 GB libre
     return 0;
 }
 
-// Game-specific import tables for The Sims 3 Ambitions
 const import_entry patch_imports[] = {
-    {"_open", (uintptr_t)p_open, 0},
-    {"_read", (uintptr_t)p_read, 0},
-    {"_write", (uintptr_t)p_write, 0},
-    {"_lseek", (uintptr_t)p_lseek, 0},
-    {"_fstat", (uintptr_t)p_fstat, 0},
-    {"_remove", (uintptr_t)p_remove, 0},
-    {"_getenv", (uintptr_t)p_getenv, 0},
-    {"_setenv", (uintptr_t)p_setenv, 0},
-    {"_printf", (uintptr_t)p_printf, 0},
-    {"_fprintf", (uintptr_t)p_fprintf, 0},
-    {"__Znwm", (uintptr_t)cpp_new, 0},
-    {"__Znam", (uintptr_t)cpp_new, 0},
-    {"__ZdaPv", (uintptr_t)cpp_delete, 0},
-    {"___gxx_personality_sj0", (uintptr_t)dummy_personality, 0},
-    {"_UIApplicationMain", (uintptr_t)p_UIApplicationMain, 0},
+    D(crc32), D(deflate), D(deflateEnd), D(deflateInit2_), D(get_crc_table), D(inflate), D(inflateEnd),
+    D(inflateInit2_),
+    F(sqlite3_open, p_sqlite3_open), D(sqlite3_bind_int), D(sqlite3_changes), D(sqlite3_column_int),
+    D(sqlite3_last_insert_rowid), D(sqlite3_prepare), D(sqlite3_reset),
+    D(xmlCopyNode), D(xmlDocDumpFormatMemory), D(xmlDocDumpMemory), D(xmlDocGetRootElement), D(xmlFreeDoc),
+    D(xmlFreeNode), D(xmlGetLastError), D(xmlNodeDumpOutput), D(xmlNodeListGetString), D(xmlOutputBufferClose),
+    D(xmlOutputBufferFlush), D(xmlParseDoc), D(xmlReadMemory), D(xmlResetLastError), D(xmlXPathEvalExpression),
+    D(xmlXPathFreeContext), D(xmlXPathFreeObject), D(xmlXPathNewContext), V(xmlFree, &xmlFree),
+    F(xmlOutputBufferCreateIO, p_xmlOutputBufferCreateIO),
+#ifdef HOSTTEST
+    F(__srget, p_srget),
+#else
+    D(__srget),
+#endif
+    F(flockfile, p_zero), F(funlockfile, p_zero), F(statfs, p_statfs),
 };
-const int patch_imports_count = sizeof(patch_imports) / sizeof(patch_imports[0]);
+TABLE_END(patch)
 
-void patch_init(void) {
-    l_info("Initializing patches for The Sims 3 Ambitions...");
+// ---------------------------------------------------------------- GLES1 forzado
+// El juego trae dos renderers (cadenas "OpenGLES1"/"OpenGLES2", shaders GLSL embebidos e imports
+// de los dos). El runtime solo tiene probado GLES1 (incluida la paleta de matrices OES que usa el
+// skinning de ES1) y no exporta GLES2: initWithAPI:2 -> nil para que el juego caiga al camino ES1.
+static id (*ea_init)(id, SEL, int);
+static id (*ea_init_share)(id, SEL, int, id);
+static id p_initWithAPI(id self, SEL c, int api) {
+    if (api != 1) {
+        l_info("EAGLContext initWithAPI:%d -> nil (forzado GLES1)", api);
+        return NULL;
+    }
+    return ea_init(self, c, api);
+}
+static id p_initWithAPIShare(id self, SEL c, int api, id share) {
+    if (api != 1) {
+        l_info("EAGLContext initWithAPI:%d sharegroup: -> nil (forzado GLES1)", api);
+        return NULL;
+    }
+    return ea_init_share(self, c, api, share);
 }
 
-void patch_frame(void) {
-    // Per-frame logic if required
+void patch_init(void) {
+    // vtable de una clase nativa = copia en heap con SEL internados (objc.c intern_table): se edita en el lugar.
+    objc_class *c = objc_getClass("EAGLContext");
+    SEL s1 = sel_registerName("initWithAPI:"), s2 = sel_registerName("initWithAPI:sharegroup:");
+    for (nmethod *m = c ? c->vtable : NULL; m && m->sel; m++) {
+        if (m->sel == s1)
+            ea_init = m->imp, m->imp = (void *)p_initWithAPI;
+        else if (m->sel == s2)
+            ea_init_share = m->imp, m->imp = (void *)p_initWithAPIShare;
+    }
+    if (!ea_init || !ea_init_share)
+        l_error("patch: EAGLContext sin initWithAPI: nativo, GLES1 no forzado");
 }

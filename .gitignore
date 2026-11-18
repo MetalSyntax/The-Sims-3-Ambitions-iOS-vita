@@ -22,7 +22,7 @@ assets/
 /build/
 CMakeCache.txt
 CMakeFiles/
-Makefile
+/Makefile
 cmake_install.cmake
 *.elf
 *.velf
@@ -49,3 +49,5 @@ __pycache__/
 .idea/
 *.swp
 cmake-build-*/
+hosttest/
+screenshots/
