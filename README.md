@@ -1,118 +1,137 @@
-# iOS Mach-O Loader Boilerplate for PS Vita
+<h1 align="center">
+  <img src="extras/livearea/pic0.png" alt="The Sims 3 Ambitions PS Vita Banner" width="700"><br>
+  The Sims 3 Ambitions · PS Vita Port
+</h1>
 
-A reusable boilerplate and scaffolding framework for porting classic 32-bit iOS games (ARMv6 / ARMv7, 32-bit Mach-O `MH_EXECUTE`) to the PlayStation Vita.
-This is the iOS counterpart to [`soloader-boilerplate`](https://github.com/Rinnegatamante/soloader-boilerplate) (Android), based on the proven, battle-tested architecture developed in [`Inotia2-vita`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/Inotia2-vita).
+<p align="center">
+  <a href="#-status--playability">Status & Playability</a> •
+  <a href="#setup-instructions-for-players">How to install</a> •
+  <a href="#controls">Controls</a> •
+  <a href="#known-issues">Known Issues</a> •
+  <a href="#build-instructions-for-developers">How to compile</a> •
+  <a href="#credits--acknowledgments">Credits</a>
+</p>
 
----
-
-## Loader Architecture
-
-| Component | File(s) | Role & Emulation Functionality |
-|---|---|---|
-| **Mach-O Loader** | [`source/macho.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/macho.c), [`source/macho.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/macho.h) | Custom static dyld and 32-bit Mach-O executable loader with fixed base address (`MACHO_SLIDE = 0x98000000`). Applies data segment rebases, resolves import tables (`__la_symbol_ptr`, `__nl_symbol_ptr`), and binds stubs for unhandled symbols. |
-| **Assembly Glue & Trampolines** | [`source/asm.S`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/asm.S) | `call_guest` and `call_guest6` (preserve `r9`). `ml_align_call` (bridges iOS 4-byte stack alignment to VitaSDK/newlib 8-byte AAPCS). `ml_unimpl_entry` (auto-logging unimplemented stub). |
-| **Darwin / POSIX Subsystem** | [`source/darwin.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin.c), [`source/darwin.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin.h) | Darwin libc, libgcc, pthreads, and sockets emulation. Thread-safe POSIX wrapper with `SceUID` tracking (prevents fatal crashes on `pthread_detach`). High-precision `mach_absolute_time()` mapped to `sceKernelGetProcessTimeWide()`. |
-| **Variadic Formatter** | [`source/darwin_printf.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin_printf.c), [`source/darwin_printf.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin_printf.h) | Printf engine tailored to Darwin's ARM ABI: reads 64-bit doubles and integers from unaligned word boundaries, with native support for Objective-C's `%@` specifier (`NSString*`). |
-| **Mini-runtime ObjC / UIKit** | [`source/objc.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/objc.c), [`source/objc.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/objc.h) | Fast selector-based dispatching with `objc_msgSend` and `objc_msgSend_stret`. Emulates `NSString`, `UIFont` (rendered using a FreeType glyph atlas), `NSBundle` (`resourcePath`), `NSCalendar`, `UIDevice`, and on-screen keyboard via `sceImeDialog`. |
-| **OpenGL ES Graphics Backend** | [`source/gles.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/gles.c), [`source/gles.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/gles.h), [`source/vitagl_no_splash.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/vitagl_no_splash.c) | GLES1 and GLES2 pipeline powered by vendored `vitaGL` compiled with `SOFTFP_ABI=1`. Virtual FBO supports display orientation rotation and aspect-ratio scaling (portrait/landscape to Vita's native 960x544). Converts `GL_FIXED` vertex arrays and disables blocking splashscreens. |
-| **CgBI PNG Decoder** | [`source/cgbi.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/cgbi.c), [`source/cgbi.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/cgbi.h) | Native decompressor and BGR-to-RGB byte-swap converter for Apple's proprietary CgBI-optimized PNG assets, allowing intact IPA bundles to load directly without offline conversion. |
-| **CoreAudio Backend** | [`source/coreaudio.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/coreaudio.c) | Emulates AudioUnit RemoteIO and AudioSession on a dedicated high-priority `sceAudioOut` audio thread. |
-| **Input Subsystem** | [`source/input.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/input.c), [`source/input.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/input.h) | Maps PS Vita physical buttons and front capacitive multitouch screen to iOS touch events (`UITouchPhaseBegan`, `Moved`, `Ended`). |
-| **Logging Subsystem** | [`source/log.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/log.c), [`source/log.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/log.h) | Rotating on-device file logger (`ux0:data/<slug>/logs/log_001.log` .. `log_999.log`) and live stdout streaming. |
-| **Game Patches & Glue** | [`source/patch.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/patch.c), [`source/patch.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/patch.h) | Dedicated hooks for game-specific memory patches, symbol redirection, and custom bypasses. |
+An unofficial, native **iOS-to-PS Vita wrapper port** of *The Sims 3 Ambitions* (original game by **Electronic Arts**). The 32-bit ARMv7 Mach-O executable from the iOS app is loaded by a custom Mach-O loader with a fixed slide (`0x98000000`). The Apple frameworks it imports are replaced by native Vita code: an Objective-C mini-runtime, UIKit, Foundation, CoreGraphics and CoreText emulation, rendering through vitaGL (`SOFTFP_ABI=1`), text through FreeType, and audio through OpenAL. The runtime is shared with the sibling port [The Sims 3 (iOS) for PS Vita](https://github.com/MetalSyntax/The-Sims-3-iOS-vita).
 
 ---
 
-## Critical iOS on PS Vita ABI Rules
+## 🎮 Status & Playability
 
-1. **`r9` as a Scratch Register**:
-   - In Apple's Darwin ARMv6/v7 ABI, `r9` is an available scratch register (not callee-saved).
-   - In the standard ARM AAPCS (used by VitaSDK/newlib), `r9` is callee-saved or platform-reserved.
-   - **Rule**: The entire loader codebase MUST be compiled with `-ffixed-r9`, and any execution transfer into the game binary must transition through `call_guest` / `call_guest6` in [`source/asm.S`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/asm.S) to prevent register corruption.
-2. **SoftFP Calling Convention**:
-   - iOS 32-bit binaries pass single and double precision floats in integer registers (`r0..r3`).
-   - `vitaGL` MUST be compiled with `SOFTFP_ABI=1` so that internal calls and GXM commands (`sceGxmSetViewport`, etc.) maintain proper argument alignment.
-3. **4-Byte Stack Alignment**:
-   - 32-bit iOS code only enforces 4-byte stack alignment.
-   - VitaSDK newlib functions (especially `printf`, `malloc`, and math routines) expect an 8-byte aligned stack (AAPCS).
-   - All C callbacks invoked by the game binary enter through `ml_align_call` to re-align `sp` to an 8-byte boundary before calling newlib or vitaGL.
-4. **FairPlay DRM Decryption**:
-   - The Mach-O executable in the IPA must be completely decrypted (`cryptid = 0`).
-   - Binaries dumped directly from an encrypted app package will crash immediately with a Data Abort when loaded.
+**Status: WIP (version 01.00)**
+
+The game boots to the main menu on a physical PS Vita, and menu text and touch input work. In-game play has not been verified yet, and menu performance is still below target.
+
+- [x] **Loader & boot**: custom Mach-O loader with fixed slide `0x98000000`. The game reaches the main menu without crashing. *Verified on console.*
+- [x] **Graphics**: fullscreen 16:9. The game renders at its iPhone 5 logical size (568x320). *Verified on console.*
+- [x] **Text**: all menu text renders through FreeType, using `font.ttf` (NanumGothic) with `font_latin.ttf` as fallback. *Verified on console.*
+- [x] **Touch**: touchscreen input works. *Verified on console.*
+- [ ] **Performance**: the menu runs below the 30 FPS target. A glyph cache was just added and is not tested yet.
+- [ ] **Audio**: the OpenAL backend is in place. Not yet verified on console.
+- [ ] **In-game play**: not verified yet.
 
 ---
 
-## Included Tools (`tools/`)
+## Disclaimer
 
-- [`tools/macho_prep.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/macho_prep.py): Analyzes thin or fat Mach-O executables, verifies `cryptid == 0`, scans `__DATA` pointers against symbols, and generates `rebase.bin`.
-- [`tools/annotate.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/annotate.py): Disassembles functions, resolving PIC calls, ObjC selectors, classes, and literal strings.
-- [`tools/cgbi_check.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/cgbi_check.py): Verifies and extracts Apple CgBI-compressed PNG files.
-- [`tools/printf_check.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/printf_check.py): Validates variadic string format specifiers and alignment.
-- [`tools/stage_data.sh`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/stage_data.sh): Packages and organizes game assets into `ux0_data/<slug>/`.
-- [`tools/deploy_data.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/deploy_data.py): Incremental FTP deployment directly to the PS Vita (VitaShell).
+*The Sims 3 Ambitions* is copyright **Electronic Arts**. All rights reserved. The work presented in this repository is unofficial and is not produced, endorsed, or sanctioned by Electronic Arts or any affiliated entities.
+
+This software does NOT contain original game code, binaries, copyrighted graphics, or game assets. The authors do not promote or condone piracy in any way. To play, you must provide your own legally obtained copy of the game, as a decrypted iOS IPA (`cryptid 0`).
 
 ---
 
-## LiveArea Assets (`extras/livearea/`)
+## Setup Instructions (For Players)
 
-The repository stores all LiveArea presentation assets in [`extras/livearea/`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/extras/livearea):
-- `icon0.png`: 128×128 application icon (official iOS wordmark on light gray `#E5E5EA`).
-- `pic0.png`: 960×544 splash screen ("iPhone OS" in Helvetica Neue typography on charcoal `#202020`).
-- `startup.png`: 280×158 LiveArea startup gate button.
-- `bg0.png`: 840×500 LiveArea background (faceted geometric low-poly mesh in Apple slate gray).
-- `template.xml`: Vita LiveArea layout definition.
-
-These files are automatically mapped directly into `sce_sys/` inside the output `.vpk` by `vita_create_vpk` in `CMakeLists.txt`.
+1. **Custom firmware & plugins**: PS Vita on custom firmware with taiHEN and kubridge. Firmware 3.60 or 3.65 (Enso) is recommended. Add kubridge in `ur0:tai/config.txt`:
+   ```ini
+   *KERNEL
+   ur0:tai/kubridge.skprx
+   ```
+2. **Shader compiler**: `libshacccg.suprx` must be in `ur0:data/` (extract it with **ShaRKBR33D**).
+3. **Game files**: your own decrypted iOS IPA of *The Sims 3 Ambitions* (`cryptid 0`). The development build used the IPA named `The_Sims_3_Ambitions_v1.1.84_…`. Only this version has been tested. Extract the `Payload/<App>.app` bundle and stage it with `tools/stage_data.sh`.
+4. **Copy to the Vita** (`ux0:data/sims3ambitions/`), for example with `tools/deploy_data.py` over FTP (VitaShell):
+   ```
+   ux0:data/sims3ambitions/
+     game_app/        the extracted .app bundle (executable + resources)
+     rebase.bin       rebase table generated from the Mach-O
+     binds.bin        import bindings
+     nib.txt          precompiled MainWindow.nib, if the game has one
+     font.ttf         NanumGothic, used for menu text
+     font_latin.ttf   Latin fallback font
+     controls.txt     optional button-to-touch mapping (see Controls)
+     Documents/       created automatically: your save games
+     logs/            created automatically: one log per run
+   ```
+5. **Install VPK**: install `sims3ambitions.vpk` with VitaShell.
 
 ---
 
-## Target Console Directory Layout (`ux0:data/<slug>/`)
+## Controls
 
-```
-ux0:data/<slug>/
-  <AppName>.app/   Extracted iOS game bundle (.png, .caf, .fsb, plist assets)
-  rebase.bin       Rebase relocation table generated by tools/macho_prep.py
-  saves/           Game save directory (mapped to iOS Documents/ folder)
-  logs/            Runtime execution logs (log_001.log .. log_999.log)
-```
+Touch is the primary input. Physical buttons are optional: they are mapped to screen taps in `ux0:data/sims3ambitions/controls.txt`, which can be edited without rebuilding (format in [`tools/controls.example.txt`](tools/controls.example.txt)).
+
+| Input | Action | Status |
+| :---: | :--- | :---: |
+| **Touchscreen** | Touch input, as on iOS | ✅ Verified on console |
+| **CROSS, CIRCLE, SQUARE, TRIANGLE, L/R, START, SELECT, D-pad** | Tap at the screen position set in `controls.txt` (up to 6 bindings) | Not verified |
+| **Left stick** | Tilt (accelerometer) by default. A `STICK x y r` line in `controls.txt` turns it into a virtual drag pad | Not verified |
+| **SELECT + START** (hold 2 s) | Rotates the image; saved to `rotation.txt` | Not verified |
+
+> [!TIP]
+> Button coordinates are in the game's logical view space, with the origin at the top-left.
 
 ---
 
-## Quick Start & Port Initialization
+## Known Issues
 
-Using `psvita-toolkit`:
+- **Performance**: the menu does not reach the 30 FPS target yet. A glyph cache was added and is untested.
+- **In-game play**: not verified on hardware yet.
+- **Unverified input and audio**: the button mapping, tilt control, display rotation and audio have not been checked on the console (see the checklist above).
+- **Crash dumps** (`.psp2dmp`) are written by the system to `ux0:data/`, not to the game folder. `tools/deploy_data.py --logs` downloads them together with the logs.
+
+---
+
+## Build Instructions (For Developers)
+
+### Prerequisites
+
+- [VitaSDK](https://vitasdk.org/) with `$VITASDK` set. The libraries linked by the build are listed in [`CMakeLists.txt`](CMakeLists.txt).
+- CMake 3.14+, Python 3 (for the tools).
+- vitaGL is vendored in `vendor/vitaGL` and built by CMake with `SOFTFP_ABI=1`. No separate install is needed.
+- The original IPA and any extracted game files stay local. They are git-ignored (`*.ipa`, `*.app/`, `game_app`, `ux0_data/`, `rebase.bin`).
+
+### Compilation Commands
+
 ```bash
-# Initialize a new iOS port directly from an IPA file:
-psvita-toolkit init-port --ipa /path/to/game.ipa
-
-# Validate LiveArea assets:
-psvita-toolkit livearea validate
-
-# Build vitaGL with SoftFP ABI support:
-cd vendor/vitaGL && ./build_vitagl.sh
-
-# Configure and compile the VPK:
+git clone https://github.com/MetalSyntax/The-Sims-3-Ambitions-iOS-vita.git
+cd The-Sims-3-Ambitions-iOS-vita
+export VITASDK=$HOME/vitasdk
+tools/stage_data.sh /path/to/Payload/<App>.app   # stages game data locally; never committed
 cmake -B build
 cmake --build build
 ```
 
+The build produces `sims3ambitions.vpk` (Title ID `PSVSIMS3A`, version `01.00`) at `build/sims3ambitions.vpk`.
+
+### Deploy & Debug
+
+```bash
+python3 -I tools/deploy_data.py --ip 192.168.x.y           # upload ux0_data/sims3ambitions/ over FTP (VitaShell)
+python3 -I tools/deploy_data.py --ip 192.168.x.y --logs    # also download new logs and crash dumps
+```
+
+The IP and slug can also be stored in `.psvita-toolkit.json` (git-ignored). The loader lives in [`source/macho.c`](source/macho.c), and the libc/pthread compatibility layer in [`source/darwin.c`](source/darwin.c). Architecture and progress notes: [`PORTING_PLAN.md`](PORTING_PLAN.md) and [`port_progress.md`](port_progress.md).
+
 ---
 
-## ☕ Support My Work
+## Credits & Acknowledgments
 
-This project is **free** and will stay free. If you enjoy it, a tip from **$1** helps me keep porting games to the PS Vita:
-
-<p align="center">
-  <a href="https://ko-fi.com/metalsyntax"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a>
-</p>
-
-- **Ko-fi:** [ko-fi.com/metalsyntax](https://ko-fi.com/metalsyntax)
-- **PayPal:** [paypal.me/MetalSyntax](https://paypal.me/MetalSyntax)
-- **Bitcoin (BTC):** `133HdCsaWxdjTfmwpgGVykByhNBV338uRc`
-
-**Ko-fi supporters get:**
-- **Early access** to new ports before their public release (test builds of upcoming projects).
-- **Data preparation scripts and step-by-step guides** to set up your own game files for each new port.
-- A say in which games I port next.
-
-> Game files are never distributed. You always need your own legally obtained copy of the game.
+- ***The Sims 3 Ambitions*** is intellectual property of **Electronic Arts**. All rights reserved.
+- **vitaGL** graphics library by [Rinnegatamante](https://github.com/Rinnegatamante/vitaGL), vendored in `vendor/vitaGL`. Its license texts are in `vendor/vitaGL/COPYING` (GPL-3.0) and `vendor/vitaGL/COPYING.LESSER` (LGPL-3.0).
+- **soloader-boilerplate** by [Rinnegatamante](https://github.com/Rinnegatamante/soloader-boilerplate), the inspiration for the loader approach.
+- **FreeType** font rendering library, [freetype.org](https://freetype.org/). See its own license.
+- **NanumGothic** font (`font.ttf`). by Sandoll Communications / NAVER, SIL Open Font License 1.1.
+- **kubridge** plugin by [Bythos](https://github.com/bythos14/kubridge).
+- **VitaSDK** team, [vitasdk.org](https://vitasdk.org/).
+- Sibling port [The Sims 3 (iOS) for PS Vita](https://github.com/MetalSyntax/The-Sims-3-iOS-vita), which shares the runtime.
+- Special thanks to the PS Vita homebrew and porting community.
