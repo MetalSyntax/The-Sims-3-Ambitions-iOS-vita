@@ -70,6 +70,7 @@ typedef struct {
     int kind; // 1 ogg, 2 wav
     OggVorbis_File vf;
     FILE *f;
+    char path[256]; // wav: se reabre en cada lectura (253 SFX abiertos agotaban los fd de la Vita)
     long data_off, data_len, pos_frames;
     int channels, rate;
     int64_t frames;
@@ -118,7 +119,8 @@ static int wav_open(audio_file *a, const char *path) {
         fclose(f);
         return -1;
     }
-    a->f = f;
+    fclose(f);
+    snprintf(a->path, sizeof(a->path), "%s", path);
     a->kind = 2;
     a->frames = a->data_len / (a->channels * 2);
     return 0;
@@ -242,8 +244,12 @@ static long read_frames(audio_file *a, int64_t start, long nframes, int16_t *out
             got += r / (2 * a->channels);
         }
     } else {
-        fseek(a->f, a->data_off + start * 2 * a->channels, SEEK_SET);
-        got = fread(out, 2 * a->channels, nframes, a->f);
+        FILE *f = fopen(a->path, "rb");
+        if (f) {
+            fseek(f, a->data_off + start * 2 * a->channels, SEEK_SET);
+            got = fread(out, 2 * a->channels, nframes, f);
+            fclose(f);
+        }
     }
     a->pos_frames = start + got;
     return got;

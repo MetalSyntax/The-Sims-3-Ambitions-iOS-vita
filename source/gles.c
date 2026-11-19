@@ -74,6 +74,10 @@ static void g_glTexSubImage2D(GLenum t, GLint lv, GLint x, GLint y, GLsizei w, G
                               const void *px) {
     uint64_t t0 = now_us();
     glTexSubImage2D(t, lv, x, y, w, h, fmt, ty, px);
+    GLenum e = glGetError();
+    static int nerr;
+    if (e && nerr++ < 10) // vitaGL rechaza el formato de la textura (antes: salto a NULL)
+        l_error("glTexSubImage2D lv%d %d,%d %dx%d fmt 0x%X type 0x%X -> err 0x%X", lv, x, y, w, h, fmt, ty, e);
     subtex_us += now_us() - t0, subtex_n++, subtex_bytes += (uint64_t)w * h * 4;
 }
 #define PROF(k, stmt) do { uint64_t _t = now_us(); stmt; prof[k] += now_us() - _t; prof_n[k]++; } while (0)
@@ -1055,7 +1059,9 @@ static void dump_frame(int lit) {
     free(px);
 }
 
+uint64_t gles_last_present; // µs del último gles_present (uikit.c re-presenta con el teclado abierto)
 void gles_present(void) {
+    gles_last_present = sceKernelGetProcessTimeWide();
     static int presents, lit_at;
     dump_frame(trace_frame && lit_state > 1);
     if (trace_frame)

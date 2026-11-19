@@ -2371,6 +2371,7 @@ static id cf_stringCreateMutable(void *a, int max) {
 }
 static void cf_stringAppend(ns_string *s, id o) { ms_append(s, ns_cstr(o)); }
 static void cf_stringAppendCString(ns_string *s, const char *c, int enc) { ms_append(s, c); }
+static void cf_stringDelete(ns_string *s, int loc, int len) { ms_deleteCharactersInRange(s, NULL, loc, len); } // CFRange en r1:r2
 static id cf_copyString(void *a, id s) { return ns_string_new(ns_cstr(s)); }
 static id cf_uuidCreate(void *a) { return ns_string_new("00000000-0000-0000-0000-000000000001"); }
 static id cf_uuidCreateString(void *a, id u) { return ns_string_new(ns_cstr(u)); }
@@ -2645,7 +2646,7 @@ const import_entry foundation_imports[] = {
     F(CFNumberGetValue, cf_numberGetValue), F(CFDictionaryGetValue, cf_dictGetValue),
     F(CFDictionarySetValue, cf_dictSetValue), F(CFDictionaryCreateMutable, cf_dictCreateMutable),
     F(CFDictionaryAddValue, cf_dictAddValue), F(CFSetCreateMutable, cf_setCreateMutable), F(CFSetAddValue, cf_setAdd),
-    F(CFStringCreateMutable, cf_stringCreateMutable), F(CFStringAppend, cf_stringAppend),
+    F(CFStringCreateMutable, cf_stringCreateMutable), F(CFStringAppend, cf_stringAppend), F(CFStringDelete, cf_stringDelete),
     F(CFStringAppendCString, cf_stringAppendCString), F(CFURLCreateStringByAddingPercentEscapes, cf_copyString),
     F(CFURLCreateStringByReplacingPercentEscapesUsingEncoding, cf_copyString), F(CFUUIDCreate, cf_uuidCreate),
     F(CFUUIDCreateFromUUIDBytes, cf_uuidCreate), F(CFUUIDCreateString, cf_uuidCreateString),

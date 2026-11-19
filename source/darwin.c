@@ -79,7 +79,7 @@ static FILE *d_fopen(const char *path, const char *mode) {
     PATH(path);
     FILE *f = fopen(P, mode);
     if (!f)
-        l_info("fopen(%s, %s) falló", P, mode); // archivo que el juego espera y no está
+        l_info("fopen(%s, %s) falló (errno %d)", P, mode, errno); // archivo que el juego espera y no está
     l_debug("fopen(%s, %s) -> %p", P, mode, f);
     return f;
 }
@@ -1057,6 +1057,7 @@ static int d_posix_memalign(void **out, size_t align, size_t size) {
     *out = memalign(align < 8 ? 8 : align, size);
     return *out ? 0 : ENOMEM;
 }
+static void *d_valloc(size_t size) { return memalign(4096, size); }
 static void *d_reallocf(void *p, size_t n) {
     void *r = realloc(p, n);
     if (!r && n)
@@ -1121,7 +1122,7 @@ const import_entry darwin_imports[] = {
     F(clock_get_time, d_clock_get_time), F(host_info, d_host_info), D(strptime), F(sched_get_priority_max, d_prio_max), F(sched_get_priority_min, d_prio_min),
     F(getuid, d_zero), F(getgid, d_zero), F(getegid, d_zero), F(alarm, d_zero), F(pthread_kill, d_zero),
     F(tcgetattr, d_minus1), F(tcsetattr, d_minus1), F(pipe, d_minus1), F(kqueue, d_minus1), F(kevent, d_minus1),
-    F(syscall, d_minus1), F(pthread_getname_np, d_pthread_getname_np), F(posix_memalign, d_posix_memalign),
+    F(syscall, d_minus1), F(pthread_getname_np, d_pthread_getname_np), F(posix_memalign, d_posix_memalign), F(valloc, d_valloc),
     F(reallocf, d_reallocf), D(times), D(wmemchr), D(wmemcmp), D(wmemcpy), D(wmemmove),
     F(fopen$DARWIN_EXTSN, d_fopen), F(select$DARWIN_EXTSN, d_select), F(__strncat_chk, d___strncat_chk),
     F(__vsnprintf_chk, d___vsnprintf_chk), F(__divmodsi4, d_divmodsi4), F(__udivmodsi4, d_udivmodsi4),

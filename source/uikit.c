@@ -1145,6 +1145,9 @@ uint64_t uikit_cg_prof_us(void) {
 }
 #define CG_T(stmt) do { uint64_t _t = sceKernelGetProcessTimeWide(); stmt; cg_us += sceKernelGetProcessTimeWide() - _t; } while (0)
 static void cgt_FillPath(cg_ctx *c) { CG_T(cg_FillPath(c)); }
+// coretext.c pisa Begin/FillPath (va antes en imports.c): sin glifo pendiente delega aquí (trazados MoveTo/LineTo)
+void uikit_BeginPath(void *c) { cg_BeginPath(c); }
+void uikit_FillPath(void *c) { cgt_FillPath(c); }
 static void cgt_DrawImage(cg_ctx *c, CGRect r, cg_image *img) { CG_T(cg_DrawImage(c, r, img)); }
 static void cgt_FillRect(cg_ctx *c, CGRect r) { CG_T(cg_FillRect(c, r)); }
 static void cgt_ClearRect(cg_ctx *c, CGRect r) { CG_T(cg_ClearRect(c, r)); }
@@ -1180,7 +1183,7 @@ static id ret_self(id self, SEL _c) { return self; }
 static id ret_cls_obj(id cls, SEL _c) { return AR(objc_alloc((objc_class *)cls)); }
 static const nmethod uicolor_c[] = {
     NM("colorWithRed:green:blue:alpha:", ret_cls_obj), NM("blackColor", ret_cls_obj), NM("whiteColor", ret_cls_obj),
-    NM("clearColor", ret_cls_obj), NM("grayColor", ret_cls_obj), NM("redColor", ret_cls_obj),
+    NM("clearColor", ret_cls_obj), NM("grayColor", ret_cls_obj), NM("lightGrayColor", ret_cls_obj), NM("redColor", ret_cls_obj),
     NM("colorWithWhite:alpha:", ret_cls_obj), NM("colorWithPatternImage:", ret_cls_obj), {0}};
 static const nmethod uicolor_i[] = {
     NM("initWithRed:green:blue:alpha:", ret_self), NM("CGColor", ret_self), NM("set", v_noop), NM("setFill", v_noop), {0}};
@@ -1301,6 +1304,8 @@ typedef struct {
     objc_class *isa;
     id text, delegate, placeholder;
     int secure, maxlen;
+    id end_target; // addTarget:action:forControlEvents:UIControlEventEditingDidEndOnExit
+    SEL end_action;
 } text_field;
 static text_field *ime_field;
 static int ime_open_now;
@@ -1338,13 +1343,28 @@ static void ime_start(text_field *f) {
     p.maxTextLength = f->maxlen > 0 && f->maxlen < 255 ? f->maxlen : 32;
     p.initialText = ime_init;
     p.inputTextBuffer = ime_buf;
-    if (sceImeDialogInit(&p) >= 0) {
+    int ir = sceImeDialogInit(&p);
+    l_info("teclado: abrir (sceImeDialogInit = 0x%08X)", ir);
+    if (ir >= 0) {
         ime_open_now = 1;
         ime_field = f;
         objc_retain(f);
     }
 }
+static text_field *ime_ret; // Return pendiente: el juego procesa el cambio de texto en drawView antes
+static double ime_ret_at;
 static void ime_poll(void) {
+    if (ime_ret && ns_now() >= ime_ret_at) {
+        text_field *f = ime_ret;
+        ime_ret = NULL;
+        if (f->delegate && objc_responds(f->delegate, sel_registerName("textFieldShouldReturn:")))
+            MSG1(f->delegate, "textFieldShouldReturn:", f);
+        if (f->end_target && f->end_action) // Return en iOS dispara EditingDidEndOnExit
+            objc_msg(f->end_target, f->end_action, (uint32_t)f, 0, 0, 0);
+        if (f->delegate && objc_responds(f->delegate, sel_registerName("textFieldDidEndEditing:")))
+            MSG1(f->delegate, "textFieldDidEndEditing:", f);
+        objc_release(f);
+    }
     if (!ime_open_now || sceImeDialogGetStatus() != SCE_COMMON_DIALOG_STATUS_FINISHED)
         return;
     SceImeDialogResult r;
@@ -1367,16 +1387,17 @@ static void ime_poll(void) {
                 u8[n++] = 0xE0 | c >> 12, u8[n++] = 0x80 | ((c >> 6) & 0x3F), u8[n++] = 0x80 | (c & 0x3F);
         }
         u8[n] = 0;
+        SEL sc = sel_registerName("textField:shouldChangeCharactersInRange:replacementString:");
+        if (f->delegate && objc_responds(f->delegate, sc)) // NSRange {0, largo actual} por valor
+            objc_msg(f->delegate, sc, (uint32_t)f, 0, strlen(ns_cstr(f->text)), (uint32_t)ns_str(u8));
         objc_release(f->text);
         f->text = ns_string_new(u8);
         l_info("teclado: \"%s\"", u8);
         ns_post_notification("UITextFieldTextDidChangeNotification", f, NULL);
     }
-    if (f->delegate && objc_responds(f->delegate, sel_registerName("textFieldShouldReturn:")))
-        MSG1(f->delegate, "textFieldShouldReturn:", f);
-    if (f->delegate && objc_responds(f->delegate, sel_registerName("textFieldDidEndEditing:")))
-        MSG1(f->delegate, "textFieldDidEndEditing:", f);
-    objc_release(f);
+    // ponytail: 0.5 s > intervalo del timer de drawView más lento visto en Sims 3 (0.2 s); si este usa uno más lento, subirlo
+    ime_ret = f; // hereda el retain de ime_start
+    ime_ret_at = ns_now() + 0.5;
 }
 static id tf_initWithFrame(text_field *self, SEL _c, CGRect r) {
     v_initWithFrame(self, _c, r);
@@ -1391,8 +1412,17 @@ static void tf_setText(text_field *self, SEL _c, id t) {
 static void tf_setDelegate(text_field *self, SEL _c, id d) { self->delegate = d; }
 static id tf_delegate(text_field *self, SEL _c) { return self->delegate; }
 static void tf_setSecure(text_field *self, SEL _c, int s) { self->secure = s & 0xFF; }
+static void tf_addTarget(text_field *self, SEL _c, id target, SEL action, unsigned events) {
+    if (events & (1u << 19)) // UIControlEventEditingDidEndOnExit
+        self->end_target = target, self->end_action = action;
+}
 static int tf_become(text_field *self, SEL _c) {
+    SEL sb = sel_registerName("textFieldShouldBeginEditing:");
+    if (self->delegate && objc_responds(self->delegate, sb) && !(objc_msg(self->delegate, sb, (uint32_t)self, 0, 0, 0) & 0xFF))
+        return 0;
     ime_start(self);
+    if (self->delegate && objc_responds(self->delegate, sel_registerName("textFieldDidBeginEditing:")))
+        MSG1(self->delegate, "textFieldDidBeginEditing:", self);
     return 1;
 }
 // Tocar el campo abre el teclado, como en iOS (si no, el toque se perdía: el campo tapa al EAGLView).
@@ -1406,7 +1436,8 @@ static const nmethod uitf_i[] = {
     NM("setTextColor:", v_noop), NM("setBorderStyle:", v_noop), NM("setKeyboardType:", v_noop),
     NM("setReturnKeyType:", v_noop), NM("setAutocorrectionType:", v_noop), NM("setAutocapitalizationType:", v_noop),
     NM("setKeyboardAppearance:", v_noop), NM("setTextAlignment:", v_noop), NM("setClearButtonMode:", v_noop),
-    NM("setEnablesReturnKeyAutomatically:", v_noop), NM("addTarget:action:forControlEvents:", v_noop), {0}};
+    NM("setEnablesReturnKeyAutomatically:", v_noop), NM("setAdjustsFontSizeToFitWidth:", v_noop),
+    NM("addTarget:action:forControlEvents:", tf_addTarget), {0}};
 
 // ================================================================ MediaPlayer (videos: se saltean)
 
@@ -1712,6 +1743,11 @@ void ui_runloop_tick(double max_wait) {
     tick_depth++;
     input_poll(); // -> ui_touch_event / botones
     ime_poll();
+    // con el teclado abierto el juego deja de presentar (espera el nombre) y el sceImeDialog solo se dibuja en
+    // vglSwapBuffers: re-presentar el último frame a ~30 fps
+    extern uint64_t gles_last_present;
+    if (ime_open_now && sceKernelGetProcessTimeWide() - gles_last_present > 33000)
+        gles_present();
     anim_poll();
     accel_tick();
     if (nlayout)
@@ -1752,7 +1788,7 @@ static int wd_thread(SceSize args, void *argp) {
     for (;;) {
         sceKernelDelayThread(500000);
         uint64_t now = sceKernelGetProcessTimeWide();
-        if (frames != last || !frames) {
+        if (frames != last || !frames || ime_open_now) { // con el teclado abierto el juego no presenta: normal
             last = frames, since = now;
         } else if (now - since > 8 * 1000000ULL) {
             l_error("[WATCHDOG] 8 s sin presentRenderbuffer (frames=%u%s): crash deliberado para el dump", (unsigned)frames,

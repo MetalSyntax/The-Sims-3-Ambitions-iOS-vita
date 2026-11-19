@@ -1212,6 +1212,8 @@ static inline __attribute__((always_inline)) void _glTexSubImage2D(texture *tex,
 		case SCE_GXM_TEXTURE_FORMAT_U5U5U5U1_RGBA:
 			fast_store = GL_TRUE;
 			break;
+		default: // vita port: formato sin write_cb (p. ej. comprimido) -> antes saltaba a NULL
+			SET_GL_ERROR_WITH_VALUE(GL_INVALID_OPERATION, tex_format)
 		}
 		uint32_t mip_w, mip_stride;
 		if (level > 0) {

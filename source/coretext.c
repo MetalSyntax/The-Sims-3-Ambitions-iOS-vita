@@ -434,7 +434,11 @@ static cg_path *ct_FontCreatePathForGlyph(ct_font *f, uint16_t g, void *matrix) 
 
 static cg_path *pending; // CGContextAddPath -> FillPath/DrawPath (ponytail: un camino, sin contexto por hilo)
 static float line_w = 1, text_px = 12;
-static void cg_BeginPath(void *c) { pending = NULL; }
+void uikit_BeginPath(void *c), uikit_FillPath(void *c);
+static void cg_BeginPath(void *c) {
+    pending = NULL;
+    uikit_BeginPath(c);
+}
 static void cg_AddPath(void *c, cg_path *p) { pending = objc_is_kind(p, c_CGPath) ? p : NULL; }
 static void cg_SetLineWidth(void *c, float w) { line_w = w; }
 static void path_draw(void *c, float stroke) {
@@ -444,7 +448,14 @@ static void path_draw(void *c, float stroke) {
     draw_glyph(c, pending->glyph, pending->size, 0, 0, stroke);
     pthread_mutex_unlock(&ft_lock);
 }
-static void cg_FillPath(void *c) { path_draw(c, 0); }
+// Sin glifo: trazado MoveTo/LineTo de uikit.c (Sims 3 Ambitions borra cada texto con un rect en kCGBlendModeClear;
+// sin esto los textos se superponen)
+static void cg_FillPath(void *c) {
+    if (pending)
+        path_draw(c, 0);
+    else
+        uikit_FillPath(c);
+}
 static void cg_DrawPath(void *c, int mode) { // 0 fill 1 eoFill 2 stroke 3 fillStroke 4 eoFillStroke
     if (mode != 2)
         path_draw(c, 0);
